@@ -1,8 +1,8 @@
 import os
+import uuid
 from flask import Flask, request, jsonify, render_template
 import numpy as np
 
-# Keras / TF (ojo: en algunos hostings no compila fácil)
 from keras.models import load_model
 from keras.preprocessing.image import load_img, img_to_array
 
@@ -15,20 +15,27 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 MODEL_PATH = os.path.join(BASE_DIR, "models", "cats_vs_dogs_model.h5")
 
-try:
-    model = load_model(MODEL_PATH)
-    print("✅ Modelo cargado correctamente:", MODEL_PATH)
-except Exception as e:
-    print("❌ Error cargando el modelo:", e)
-    raise
+# Lazy-load del modelo (se carga solo cuando alguien llama /predict)
+_model = None
+
+
+def get_model():
+    """Carga el modelo solo una vez por worker."""
+    global _model
+    if _model is None:
+        _model = load_model(MODEL_PATH)
+        print("✅ Modelo cargado correctamente:", MODEL_PATH)
+    return _model
 
 
 def predict_image(path: str):
+    """Predice gato/perro a partir de una imagen en disco."""
     img = load_img(path, target_size=(150, 150))
     img_array = img_to_array(img) / 255.0
     img_array = np.expand_dims(img_array, axis=0)
 
-    pred = float(model.predict(img_array)[0][0])
+    model = get_model()
+    pred = float(model.predict(img_array, verbose=0)[0][0])
 
     if pred > 0.5:
         return {"class": "dog", "confidence": pred}
@@ -50,7 +57,9 @@ def predict():
     if not file.filename:
         return jsonify({"error": "El nombre del archivo está vacío"}), 400
 
-    filepath = os.path.join(UPLOAD_FOLDER, file.filename)
+    # Evita colisiones y nombres raros
+    filename = f"{uuid.uuid4().hex}_{file.filename}"
+    filepath = os.path.join(UPLOAD_FOLDER, filename)
     file.save(filepath)
 
     result = predict_image(filepath)
@@ -58,6 +67,5 @@ def predict():
 
 
 if __name__ == "__main__":
-    # local/codespaces
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(host="0.0.0.0", port=port, debug=False)
