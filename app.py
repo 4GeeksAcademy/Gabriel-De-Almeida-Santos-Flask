@@ -1,70 +1,68 @@
 import os
 import uuid
-from flask import Flask, request, jsonify, render_template
 import numpy as np
-
-from keras.models import load_model
-from keras.preprocessing.image import load_img, img_to_array
+from flask import Flask, request, jsonify, render_template
+from PIL import Image
+import tflite_runtime.interpreter as tflite
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
 app = Flask(__name__, template_folder=os.path.join(BASE_DIR, "templates"))
 
 UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-MODEL_PATH = os.path.join(BASE_DIR, "models", "cats_vs_dogs_model.h5")
+MODEL_PATH = os.path.join(BASE_DIR, "models", "cats_vs_dogs_model.tflite")
 
-# Lazy-load del modelo (se carga solo cuando alguien llama /predict)
-_model = None
+_interpreter = None
+_input_index = None
+_output_index = None
 
+def get_interpreter():
+    global _interpreter, _input_index, _output_index
+    if _interpreter is None:
+        _interpreter = tflite.Interpreter(model_path=MODEL_PATH)
+        _interpreter.allocate_tensors()
+        input_details = _interpreter.get_input_details()
+        output_details = _interpreter.get_output_details()
+        _input_index = input_details[0]["index"]
+        _output_index = output_details[0]["index"]
+        print("✅ TFLite cargado:", MODEL_PATH)
+    return _interpreter
 
-def get_model():
-    """Carga el modelo solo una vez por worker."""
-    global _model
-    if _model is None:
-        _model = load_model(MODEL_PATH)
-        print("✅ Modelo cargado correctamente:", MODEL_PATH)
-    return _model
-
+def preprocess_image(path: str) -> np.ndarray:
+    img = Image.open(path).convert("RGB").resize((150, 150))
+    arr = np.asarray(img, dtype=np.float32) / 255.0
+    arr = np.expand_dims(arr, axis=0)
+    return arr
 
 def predict_image(path: str):
-    """Predice gato/perro a partir de una imagen en disco."""
-    img = load_img(path, target_size=(150, 150))
-    img_array = img_to_array(img) / 255.0
-    img_array = np.expand_dims(img_array, axis=0)
-
-    model = get_model()
-    pred = float(model.predict(img_array, verbose=0)[0][0])
+    x = preprocess_image(path)
+    interpreter = get_interpreter()
+    interpreter.set_tensor(_input_index, x)
+    interpreter.invoke()
+    pred = float(interpreter.get_tensor(_output_index)[0][0])
 
     if pred > 0.5:
         return {"class": "dog", "confidence": pred}
-    else:
-        return {"class": "cat", "confidence": 1 - pred}
-
+    return {"class": "cat", "confidence": 1 - pred}
 
 @app.route("/")
 def home():
     return render_template("index.html")
 
-
 @app.route("/predict", methods=["POST"])
 def predict():
     if "file" not in request.files:
         return jsonify({"error": "No se envió ninguna imagen"}), 400
-
     file = request.files["file"]
     if not file.filename:
         return jsonify({"error": "El nombre del archivo está vacío"}), 400
 
-    # Evita colisiones y nombres raros
     filename = f"{uuid.uuid4().hex}_{file.filename}"
     filepath = os.path.join(UPLOAD_FOLDER, filename)
     file.save(filepath)
 
-    result = predict_image(filepath)
-    return jsonify(result), 200
-
+    return jsonify(predict_image(filepath)), 200
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
