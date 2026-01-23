@@ -1,3 +1,19 @@
 __pycache__
 .env
 .learn
+# entornos virtuales
+tf310/
+tf311/
+tf_convert/
+.venv/
+venv/
+
+# python basura
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# sistema
+.DS_Store
+Thumbs.db
